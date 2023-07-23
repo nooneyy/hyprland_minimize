@@ -49,6 +49,7 @@ bind = $mainMod, H, movetoworkspace, special:minimized
 bind = $mainMod, W, exec, rofi -show script -modes "script:~/.config/hyprland_minimize"
 ...
 ```
+In this case, mod+H would move a focused window to the special:minimized workspace (effectively minimizing it) and mod+W would open the rofi menu that executes hyprland_minimize.
 
 ## Contributing
 
