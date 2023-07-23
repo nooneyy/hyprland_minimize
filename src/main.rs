@@ -63,7 +63,7 @@ fn main() {
             if ws_name == "(special:minimized)" {
                 unminimize(window.pid);
             } else {
-                focus(window.pid);
+                focus(window.pid, ws_name);
             }
         }
     }
@@ -169,11 +169,12 @@ fn unminimize(pid: i32) {
     }
 }
 
-fn focus(pid: i32) {
+fn focus(pid: i32, workspace: String) {
     if let Some(window) =
         parse_clients(&hyprctl_command(vec!["activewindow"]).unwrap_or_default()).get(0)
     {
-        if window.fullscreen > 0 {
+        let (_, ws_name) = &window.workspace;
+        if window.fullscreen > 0 && workspace == *ws_name {
             if let Err(e) = hyprctl_command(vec![
                 "dispatch",
                 "fullscreen",
