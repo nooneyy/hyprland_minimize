@@ -1,7 +1,7 @@
 use std::env;
 use std::process::Command;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 struct Window {
     monitor: i32,
     class: String,
@@ -23,35 +23,27 @@ impl Window {
         }
     }
     fn format(&self) -> Option<String> {
-        let mut formatted: String = String::new();
-        if !(self.class.is_empty()) {
+        if !self.class.is_empty() {
             let (_, ws_name) = &self.workspace;
-            if self.class == self.title {
-                formatted = format!(
-                    "{}: {}, Workspace: {}",
-                    self.monitor,
-                    self.class,
-                    ws_name.trim_matches(|c| c == '(' || c == ')')
-                );
-            } else {
-                formatted = format!(
-                    "{}: {} >> {}, Workspace: {}",
-                    self.monitor,
-                    self.class,
-                    self.title,
-                    ws_name.trim_matches(|c| c == '(' || c == ')')
-                );
-            }
-        }
-        match formatted.as_str() {
-            "" => None,
-            _ => Some(formatted),
+            Some(format!(
+                "{}: {}{}, Workspace: {}",
+                self.monitor,
+                self.class,
+                if self.class != self.title {
+                    format!(" >> {}", self.title)
+                } else {
+                    "".to_string()
+                },
+                ws_name.trim_matches(|c| c == '(' || c == ')')
+            ))
+        } else {
+            None
         }
     }
 }
 
 fn main() {
-    let windows: Vec<Window> = parse_clients(&hyprctl_command(vec!["clients"]).unwrap_or_default());
+    let windows: Vec<Window> = parse_clients(&hyprctl_command(&["clients"]).unwrap_or_default());
     if env::args().len() == 2 {
         let arg: String = env::args()
             .collect::<Vec<String>>()
@@ -61,9 +53,11 @@ fn main() {
         if let Some(window) = get_window_from_arg(&windows, &arg) {
             let (_, ws_name) = window.workspace;
             if ws_name == "(special:minimized)" {
-                unminimize(window.pid);
-            } else {
-                focus(window.pid, ws_name);
+                if let Err(e) = unminimize(window.pid) {
+                    panic!("Failed to unminimize window: {}", e);
+                }
+            } else if let Err(e) = focus(&windows, window.pid, &ws_name) {
+                panic!("Failed to focus window: {}", e);
             }
         }
     }
@@ -77,12 +71,15 @@ fn main() {
     }
 }
 
-fn hyprctl_command(args: Vec<&str>) -> Result<String, String> {
-    let output: std::process::Output = Command::new("hyprctl")
-        .args(&args)
-        .output()
-        .unwrap_or_else(|_| panic!("Failed to execute hyprctl with args {:#?}", &args));
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+fn hyprctl_command(args: &[&str]) -> Result<String, String> {
+    String::from_utf8(
+        Command::new("hyprctl")
+            .args(args)
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to execute hyprctl with arg {}", &args.join(" ")))
+            .stdout,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn parse_clients(clients: &str) -> Vec<Window> {
@@ -119,77 +116,71 @@ fn parse_clients(clients: &str) -> Vec<Window> {
     parsed_clients
 }
 
-fn get_window_from_arg(windows: &Vec<Window>, arg: &String) -> Option<Window> {
-    let mut window_result = Window::new();
+fn get_window_from_arg(windows: &Vec<Window>, arg: &str) -> Option<Window> {
     for window in windows {
-        if let Some(x) = window.format() {
-            if x == *arg {
-                window_result = window.clone();
-                break;
+        if let Some(formatted) = window.format() {
+            if formatted == arg {
+                return Some(window.clone());
             }
         }
     }
-    if Window::new() != window_result {
-        Some(window_result)
-    } else {
-        None
-    }
+    None
 }
 
-fn unminimize(pid: i32) {
+fn unminimize(pid: i32) -> Result<(), String> {
     if let Some(window) =
-        parse_clients(&hyprctl_command(vec!["activewindow"]).unwrap_or_default()).get(0)
+        parse_clients(&hyprctl_command(&["activewindow"]).unwrap_or_default()).get(0)
     {
+        let (ws_int, _) = &window.workspace;
         if window.fullscreen > 0 {
-            let (workspace, _) = window.workspace;
-            if let Err(e) = hyprctl_command(vec![
-                "dispatch",
-                "fullscreen",
-                &format!("pid:{}", window.pid),
-            ]) {
-                eprintln!("Error un-fullscreening focused window: {}", e);
-            }
-            if let Err(e) = hyprctl_command(vec![
-                "dispatch",
-                "movetoworkspace",
-                &format!("{},pid:{pid}", workspace),
-            ]) {
-                eprintln!("Failed to move minimized window to workspace: {}", e);
-            }
-        } else {
-            let (workspace, _) = window.workspace;
-            if let Err(e) = hyprctl_command(vec![
-                "dispatch",
-                "movetoworkspace",
-                &format!("{},pid:{pid}", workspace),
-            ]) {
-                eprintln!("Failed to move minimized window to workspace: {}", e);
-            }
+            hyprctl_command(&["dispatch", "fullscreen"])?;
         }
+        match hyprctl_command(&[
+            "dispatch",
+            "movetoworkspace",
+            &format!("{},pid:{}", ws_int, pid),
+        ]) {
+            Err(e) => Err(e),
+            Ok(_) => Ok(()),
+        }
+    } else if let Some(ws_name) =
+        parse_activeworkspace(&hyprctl_command(&["activeworkspace"]).unwrap_or_default())
+    {
+        match hyprctl_command(&[
+            "dispatch",
+            "movetoworkspace",
+            &format!("{},pid:{}", ws_name, pid),
+        ]) {
+            Err(e) => Err(e),
+            Ok(_) => Ok(()),
+        }
+    } else {
+        Err("Failed to get active workspace or active window".to_owned())
     }
 }
 
-fn focus(pid: i32, workspace: String) {
-    if let Some(window) =
-        parse_clients(&hyprctl_command(vec!["activewindow"]).unwrap_or_default()).get(0)
-    {
+fn focus(windows: &Vec<Window>, pid: i32, workspace: &str) -> Result<(), String> {
+    for window in windows {
         let (_, ws_name) = &window.workspace;
         if window.fullscreen > 0 && workspace == *ws_name {
-            if let Err(e) = hyprctl_command(vec![
-                "dispatch",
-                "fullscreen",
-                &format!("pid:{}", window.pid),
-            ]) {
-                eprintln!("Error un-fullscreening focused window: {}", e);
-            }
-            if let Err(e) = hyprctl_command(vec!["dispatch", "focuswindow", &format!("pid:{pid}")])
-            {
-                eprintln!("Failed to move focus window: {}", e);
-            }
-        } else if let Err(e) =
-            hyprctl_command(vec!["dispatch", "focuswindow", &format!("pid:{pid}")])
-        {
-            eprintln!("Failed to move focus window: {}", e);
+            println!("{}", &format!("pid:{}", window.pid));
+            hyprctl_command(&["dispatch", "focuswindow", &format!("pid:{}", window.pid)])?;
+            hyprctl_command(&["dispatch", "fullscreen"])?;
+            break;
         }
     }
+    match hyprctl_command(&["dispatch", "focuswindow", &format!("pid:{}", pid)]) {
+        Err(e) => Err(e),
+        Ok(_) => Ok(()),
+    }
+}
+
+fn parse_activeworkspace(activeworkspace: &str) -> Option<&str> {
+    activeworkspace
+        .lines()
+        .next()
+        .and_then(|x| x.split_once(" on "))
+        .and_then(|(y, _)| y.strip_prefix("workspace ID "))
+        .and_then(|z| z.split_once(' ').map(|(_, a)| a))
+        .map(|r| r.trim_matches(|c| c == '(' || c == ')'))
 }
