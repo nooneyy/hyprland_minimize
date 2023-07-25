@@ -163,7 +163,6 @@ fn focus(windows: &Vec<Window>, pid: i32, workspace: &str) -> Result<(), String>
     for window in windows {
         let (_, ws_name) = &window.workspace;
         if window.fullscreen > 0 && workspace == *ws_name {
-            println!("{}", &format!("pid:{}", window.pid));
             hyprctl_command(&["dispatch", "focuswindow", &format!("pid:{}", window.pid)])?;
             hyprctl_command(&["dispatch", "fullscreen"])?;
             break;
